@@ -27,6 +27,8 @@ Create `local.jsonnet`, the local configuration file. It should contain the foll
 Training or running the model works with PyTorch 1.5+, HuggingFace Transformers, and [`pytorch_memlab`](https://github.com/Stonesjtu/pytorch_memlab).
 `pytorch_memlab` is not used by default, but it is useful for debugging and so it is left in our code as a required import.
 
+To set up all of this (excluding the TensorFlow conversion), you may run `pip install -r requirements.txt`.
+
 ## Training
 
 To train, pick one of the experiments, e.g. `spb_on_512` (or define your own) in `definitions.jsonnet` and run
