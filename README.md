@@ -9,9 +9,15 @@ We use OntoNotes 5.0. See the [official LDC release](https://catalog.ldc.upenn.e
 the [(Span)BERT-coref baseline model](https://github.com/mandarjoshi90/coref) for preprocessing steps. The `conll-2012/`
 directory, along with the `minimize.py` and `minimize_json.py` files are copied over or adapted from that repo.
 
-Download the SpanBERT coref model, which includes fine-tuned SpanBERT for coreference resolution on OntoNotes 5.0.
-To convert tf-based checkpoints from the baseline model to PyTorch tensors, set `$data_dir` to the location of the
-checkpoint and run `convert_tf_to_pt.sh tf_checkpoint_dir pt_checkpoint_dir`. This requires both TensorFlow and PyTorch.
+To get the fine-tuned SpanBERT weights, it is easiest to download `pytorch_model.bin` and `config.json` from 
+[HuggingFace models](https://huggingface.co/shtoshni/spanbert_coreference_large/blob/main/pytorch_model.bin) 
+(this links to the large size, the base size is also available in HuggingFace). 
+For the coref model weights, download [the baseline model](https://github.com/mandarjoshi90/coref), which includes both the fine-tuned SpanBERT 
+for coreference resolution on OntoNotes 5.0 and the coref model. To convert those weights from tf to pytorch, run 
+
+``python conversion_scripts/convert_tf_to_pytorch.py <path_to_model>/model.max.ckpt <path_to_model>/torch_scorer_vars.bin`` 
+
+.
 
 Create `local.jsonnet`, the local configuration file. It should contain the following information
 
