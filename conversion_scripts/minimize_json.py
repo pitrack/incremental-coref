@@ -1,8 +1,3 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-
 import re
 import os
 import sys
@@ -11,9 +6,16 @@ import tempfile
 import subprocess
 import collections
 
-import util
-import conll
-from bert import tokenization
+from transformers import *
+
+def flatten(l):
+  return [item for sublist in l for item in sublist]
+
+def right_endpoint(token_map, idx):
+  if idx + 1 == len(token_map):
+    print ("Error in retokenizing to json")
+  else:
+    return token_map[idx + 1] - 1
 
 class DocumentState(object):
   def __init__(self, key):
@@ -34,115 +36,52 @@ class DocumentState(object):
     self.segment_info = []
 
   def finalize(self):
-    # finalized: segments, segment_subtoken_map
-    # populate speakers from info
-    # subtoken_idx = 0
-    # for segment in self.segment_info:
-    #   speakers = []
-    #   for i, tok_info in enumerate(segment):
-    #     if tok_info is None and (i == 0 or i == len(segment) - 1):
-    #       speakers.append('[SPL]')
-    #     elif tok_info is None:
-    #       speakers.append(speakers[-1])
-    #     else:
-    #       speakers.append(tok_info[1])
-    #       # if tok_info[4] == 'PRP':
-    #       #   self.pronouns.append(subtoken_idx)
-    #     subtoken_idx += 1
-    #   self.speakers += [speakers]
-    # populate sentence map
-
-    # populate clusters
-    # first_subtoken_index = -1
-    # for seg_idx, segment in enumerate(self.segment_info):
-    #   speakers = []
-    #   for i, tok_info in enumerate(segment):
-    #     first_subtoken_index += 1
-    #     coref = tok_info[-2] if tok_info is not None else '-'
-    #     if coref != "-":
-    #       last_subtoken_index = first_subtoken_index + tok_info[-1] - 1
-    #       for part in coref.split("|"):
-    #         if part[0] == "(":
-    #           if part[-1] == ")":
-    #             cluster_id = int(part[1:-1])
-    #             self.clusters[cluster_id].append((first_subtoken_index, last_subtoken_index))
-    #           else:
-    #             cluster_id = int(part[1:])
-    #             self.coref_stacks[cluster_id].append(first_subtoken_index)
-    #         else:
-    #           cluster_id = int(part[:-1])
-    #           start = self.coref_stacks[cluster_id].pop()
-    #           self.clusters[cluster_id].append((start, last_subtoken_index))
-    # # merge clusters
-    # merged_clusters = []
-    # for c1 in self.clusters.values():
-    #   existing = None
-    #   for m in c1:
-    #     for c2 in merged_clusters:
-    #       if m in c2:
-    #         existing = c2
-    #         break
-    #     if existing is not None:
-    #       break
-    #   if existing is not None:
-    #     print("Merging clusters (shouldn't happen very often.)")
-    #     existing.update(c1)
-    #   else:
-    #     merged_clusters.append(set(c1))
-    # merged_clusters = [list(c) for c in merged_clusters]
-    # all_mentions = util.flatten(merged_clusters)
     sentence_map = get_sentence_map(self.segments, self.sentence_end)
-    subtoken_map = util.flatten(self.segment_subtoken_map)
+    subtoken_map = flatten(self.segment_subtoken_map)
+    reverse_subtoken_map = {}
+    subtoken_map_iter = subtoken_map + [subtoken_map[-1] + 1] if len(subtoken_map) > 0 else subtoken_map
+    for subtok, tok in enumerate(subtoken_map_iter):
+      if tok not in reverse_subtoken_map:
+        reverse_subtoken_map[tok] = subtok
+    clusters = [[[reverse_subtoken_map[span[0]], right_endpoint(reverse_subtoken_map, span[1])] for span in cluster]
+                  for cluster in self.clusters]
     # assert len(all_mentions) == len(set(all_mentions))
-    num_words =  len(util.flatten(self.segments))
-    # assert num_words == len(util.flatten(self.speakers))
-    # remap clusters
-    cluster_map = {}
-    for i, idx in enumerate(subtoken_map):
-      if idx not in cluster_map:
-        cluster_map[idx] = i
-    cluster_map[subtoken_map[-1]+1] = len(subtoken_map)
-
-    mapped_clusters = []
-    for cluster in self.clusters:
-      mapped_spans = []
-      for span in cluster:
-        try:
-          mapped_spans.append([cluster_map[span[0]],
-                               cluster_map[span[1]] - 1])
-        except:
-          import pdb; pdb.set_trace()
-      mapped_clusters.append(mapped_spans)
-
+    num_words =  len(flatten(self.segments))
+    # assert num_words == len(flatten(self.speakers))
     assert num_words == len(subtoken_map), (num_words, len(subtoken_map))
     assert num_words == len(sentence_map), (num_words, len(sentence_map))
     return {
       "doc_key": self.doc_key,
       "sentences": self.segments,
-      # "speakers": self.speakers,
-      # "constituents": [],
-      # "ner": [],
-      "clusters": mapped_clusters,
+      "clusters": clusters,
       'sentence_map':sentence_map,
       "subtoken_map": subtoken_map,
-      # 'pronouns': self.pronouns
     }
 
 
-def normalize_word(word, language):
-  if language == "arabic":
-    word = word[:word.find("#")]
-  if word == "/." or word == "/?":
-    return word[1:]
-  else:
-    return word
+# def normalize_word(word, language):
+#   if language == "arabic":
+#     word = word[:word.find("#")]
+#   if word == "/." or word == "/?":
+#     return word[1:]
+#   else:
+#     return word
 
 # first try to satisfy constraints1, and if not possible, constraints2.
-def split_into_segments(document_state, max_segment_len, constraints1, constraints2):
+# first try to satisfy constraints1, and if not possible, constraints2.
+def split_into_segments(document_state, max_segment_len, constraints1, constraints2, sentences=False):
   current = 0
   previous_token = 0
+  boundaries = [i for i, c1 in enumerate(constraints1) if c1]
+  curr_sent = 0
   while current < len(document_state.subtokens):
-    end = min(current + max_segment_len - 1 - 2, len(document_state.subtokens) - 1)
+    if not sentences:
+      end = min(current + max_segment_len - 1 - 2, len(document_state.subtokens) - 1)
+    else:
+      curr_sent += max_segment_len
+      end = min(current + 512 - 1 - 2, # max_segment_len is 512
+                len(document_state.subtokens) - 1,
+                boundaries[curr_sent] if curr_sent < len(boundaries) else 1000000)
     while end >= current and not constraints1[end]:
       end -= 1
     if end < current:
@@ -150,7 +89,6 @@ def split_into_segments(document_state, max_segment_len, constraints1, constrain
         while end >= current and not constraints2[end]:
             end -= 1
         if end < current:
-            import pdb; pdb.set_trace()
             raise Exception("Can't find valid segment")
     document_state.segments.append(['[CLS]'] + document_state.subtokens[current:end + 1] + ['[SEP]'])
     subtoken_map = document_state.subtoken_map[current : end + 1]
@@ -174,8 +112,9 @@ def get_sentence_map(segments, sentence_end):
     sent_map.append(current)
   return sent_map
 
-def get_document(document_lines, tokenizer, language, segment_len):
+def get_document(document_lines, tokenizer, language, segment_len, stats=None):
   document_state = DocumentState(document_lines[0])
+  document_state.clusters = document_lines[2]
   word_idx = -1
   for line in document_lines[1]:
     row = list(line)
@@ -183,13 +122,13 @@ def get_document(document_lines, tokenizer, language, segment_len):
     if not sentence_end:
       # assert len(row) >= 12
       word_idx += 1
-      word = normalize_word(row[0], language)
+      word = row[0] # normalize_word(row[0], language)
       subtokens = tokenizer.tokenize(word)
       document_state.tokens.append(word)
       document_state.token_end += ([False] * (len(subtokens) - 1)) + [True]
       if len(subtokens) == 0 or len(subtokens) > 100:
-        print(document_lines[0])
-        # print(word_idx, line, document_lines)
+        print (f"Skipping sentence in {document_lines[0]}: {subtokens[:35]}...")
+        # print (word_idx, line, document_lines)
         word = "-"
         subtokens = tokenizer.tokenize(word)
       for sidx, subtoken in enumerate(subtokens):
@@ -204,8 +143,8 @@ def get_document(document_lines, tokenizer, language, segment_len):
   # split_into_segments(document_state, segment_len, document_state.sentence_end)
   constraints1 = document_state.sentence_end if language != 'arabic' else document_state.token_end
   split_into_segments(document_state, segment_len, constraints1, document_state.token_end)
-  stats["max_sent_len_{}".format(language)] = max(max([len(s) for s in document_state.segments]), stats["max_sent_len_{}".format(language)])
-  document_state.clusters = document_lines[2]
+  if stats is not None:
+    stats["max_sent_len_{}".format(language)] = max(max([len(s) for s in document_state.segments]), stats["max_sent_len_{}".format(language)])
   document = document_state.finalize()
   return document
 
@@ -226,50 +165,51 @@ def minimize_partition(name, language, extension, labels, stats, tokenizer, seg_
       file_lines = [input_file.read()]
     for i, line in enumerate(file_lines):
       doc = json.loads(line)
-      doc_key = doc["doc_key"] if "doc_key" in doc else (doc["id"] if "id" in doc else str(i))
+      doc_key = doc["doc_key"] if "doc_key" in doc else str(i)
       text = []
+      clusters = doc["clusters"] if "clusters" in doc else {}
       sentences = doc["sentences"] if "sentences" in doc else doc["full_text"]
       for sentence in sentences:
         text.extend([[word] for word in sentence])
         text.append([])
-      clusters = doc["clusters"] if "clusters" in doc else []
       documents.append((doc_key, text, clusters))
   with open(output_path, "w") as output_file:
     for document_lines in documents:
       if skip(document_lines[0]):
         continue
-      document = get_document(document_lines, tokenizer, language, seg_len)
-
+      document = get_document(document_lines, tokenizer, language, seg_len, stats=stats)
       output_file.write(json.dumps(document))
       output_file.write("\n")
       count += 1
   return count
 
-def minimize_language(language, labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case):
-  # do_lower_case = True if 'chinese' in vocab_file else False
-  tokenizer = tokenization.FullTokenizer(
-                vocab_file=vocab_file, do_lower_case=do_lower_case)
+def minimize_language(language, labels, stats, seg_len, input_dir, output_dir, model):
+  if model == "bert":
+    tokenizer = BertTokenizer.from_pretrained('bert-large-cased')
+  elif model == "xlmr":
+    tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-large')
   total_count = 0
-  for file_name in os.listdir(input_dir):
-    file_head = file_name.split(".json")[0]
-    total_count += minimize_partition(file_head, language, "json", labels, stats, tokenizer, seg_len, input_dir, output_dir, lines=True)
+  files = os.listdir(input_dir)
+  print (files)
+  for file_name in files:
+    print (file_name)
+    if not file_name.endswith("jsonlines"):
+      continue
+    file_head = file_name.split(".jsonlines")[0]
+    total_count += minimize_partition(file_head, language, "jsonlines", labels, stats, tokenizer, seg_len, input_dir, output_dir, lines=True)
   print("Wrote {} documents to {}".format(total_count, output_dir))
 
 
 if __name__ == "__main__":
-  vocab_file = sys.argv[1]
-  input_dir = sys.argv[2]
-  output_dir = sys.argv[3]
-  do_lower_case = sys.argv[4].lower() == 'true'
-  print(do_lower_case)
+  input_dir = sys.argv[1]
+  output_dir = sys.argv[2]
+  model = sys.argv[3]
   labels = collections.defaultdict(set)
   stats = collections.defaultdict(int)
   if not os.path.isdir(output_dir):
     os.mkdir(output_dir)
-  for seg_len in [128, 256, 384, 512]:
-    minimize_language("", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case)
-    # minimize_language("chinese", labels, stats, vocab_file, seg_len)
-    # minimize_language("arabic", labels, stats, vocab_file, seg_len)
+  for seg_len in [512]:
+    minimize_language("", labels, stats, seg_len, input_dir, output_dir, model)
   for k, v in labels.items():
     print("{} = [{}]".format(k, ", ".join("\"{}\"".format(label) for label in v)))
   for k, v in stats.items():

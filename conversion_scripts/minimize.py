@@ -230,6 +230,10 @@ def minimize_language(language, labels, stats, vocab_file, seg_len, input_dir, o
   # do_lower_case = True if 'chinese' in vocab_file else False
   if model == "bert":
     tokenizer = BertTokenizer.from_pretrained('bert-large-cased')
+    # tokenizer = tokenization.FullTokenizer(
+    #               vocab_file=vocab_file, do_lower_case=do_lower_case)
+  elif model == "xlmr":
+    tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-large')
   minimize_partition("dev", language, "v4_gold_conll", labels, stats, tokenizer, seg_len, input_dir, output_dir)
   minimize_partition("train", language, "v4_gold_conll", labels, stats, tokenizer, seg_len, input_dir, output_dir)
   minimize_partition("test", language, "v4_gold_conll", labels, stats, tokenizer, seg_len, input_dir, output_dir)
@@ -248,6 +252,7 @@ if __name__ == "__main__":
   for seg_len in [1, 3, 5, 10]:
     minimize_language("english", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model)
     # minimize_language("chinese", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model)
+    # minimize_language("es", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model)
     # minimize_language("arabic", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model)
   for k, v in labels.items():
     print("{} = [{}]".format(k, ", ".join("\"{}\"".format(label) for label in v)))

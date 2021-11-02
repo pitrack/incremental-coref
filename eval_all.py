@@ -1,19 +1,18 @@
 import util
+import argparse
 import json
-import sys
 import numpy as np
 from metrics import CorefEvaluator, Evaluator
 from collections import defaultdict
-from eval_ontonotes import SEGMENT_EVAL
-
-predictions = sys.argv[1:]
-ALL = "__@ALL"
+from constants import ONTONOTES_SEGMENT_EVAL, ALL
 
 def read_file(path):
   d = {}
   with open(path, 'r') as f:
     for line in f:
       document_blob = json.loads(line)
+      if document_blob["doc_key"] in d:
+        document_blob["doc_key"] = document_blob["doc_key"] + "dup"
       d[document_blob["doc_key"]] = document_blob
   return d
 
@@ -34,7 +33,7 @@ def bucket_tokens(subtoken_map):
 
 def bucket_tokens_by_seg(doc_key):
   # Only works for ontonotes dev
-  segment_count = SEGMENT_EVAL.get(doc_key, 0)
+  segment_count = ONTONOTES_SEGMENT_EVAL.get(doc_key, 0)
   if segment_count <= 1:
     return ("0-128")
   elif segment_count <= 2:
@@ -72,16 +71,17 @@ def update_evaluators(evaluators, document, predicted_clusters, gold_clusters):
   has_speakers = "_speaker_" + str(genre in ["bc", "tc"])
   update_keys = [
     ALL,
-    "_genre_" + genre + "_t_" +  token_bucket,
-    "_genre0" + has_speakers,
-    "_s_" + bucket_segments(document["sentences"]),
+    # "_genre_" + genre + "_t_" +  token_bucket,
+    # "_genre0" + has_speakers,
+    # "_s_" + bucket_segments(document["sentences"]),
     # "_s+t_" + bucket_tokens_by_seg(document["doc_key"]),
     "_t_" + token_bucket,
-    genre,
+    # genre,
   ]
   if "language" in document:
     update_keys.append(document["language"])
 
+  update_keys = set(update_keys)
   for key in update_keys:
     keyed_update(key)
 
@@ -122,7 +122,7 @@ def seam_evaluation(exp):
     predicted_crossings, _ = count_crossings(predicted_clusters, segment_map)
     intersection = gold_crossings & predicted_crossings
     relaxed_intersection = [(ant, span) for ant, span in predicted_crossings
-                           if list(ant) in relaxed_gold.get(span, [])]
+                            if list(ant) in relaxed_gold.get(span, [])]
     gold_seam = len(gold_crossings)
     predicted_seam = len(predicted_crossings)
     intersection_seam = len(intersection)
@@ -175,7 +175,7 @@ def distance_eval(exp):
     }
     return ret_val
 
-  for key, document in exp.items():
+  for _, document in exp.items():
     gold_clusters = renumber(document["clusters"], document["sentences"]) # [CLS] and [SEP] get in the way
     predicted_clusters = renumber(document["predicted_clusters"], document["sentences"])
     gold_spread.extend([calc_spread(cluster) for cluster in gold_clusters if len(cluster) > 1])
@@ -191,17 +191,38 @@ def evaluate_exp(exp, simple=False):
     gold_clusters = document["clusters"]
     predicted_clusters = document["predicted_clusters"]
     update_evaluators(evaluators, document, predicted_clusters, gold_clusters)
-  eval_dict = [f"{key}: {evaluator.prf_str()}, ({evaluator.get_count()} docs)" for key, evaluator in evaluators.items()]
   if simple:
-    print(list(sorted(eval_dict))[0])
+    print(f"p/r/avg f1: {evaluators[ALL].prf_str()}, ({evaluators[ALL].get_count()} docs) [{evaluators[ALL].evaluators[3].get_f1()} ment f1]")
   else:
-    print("\n".join(list(sorted(eval_dict))))
-
+    eval_dict = {key: f"{key}: {evaluator.prf_str()}, ({evaluator.get_count()} docs)"
+                 for key, evaluator in evaluators.items()}
+    print("\n".join(list(sorted(eval_dict.values()))))
+    print("\nmetric\tprec.\trec.\tf1\n"+"\n".join(evaluators[ALL].get_full()))
+  return evaluators[ALL].get_f1()
 
 if __name__ == "__main__":
-  for pred_file in predictions:
-     print(pred_file)
-     preds = read_file(pred_file)
-     evaluate_exp(preds)# , simple=True)
-     # seam_evaluation(preds)
-     # distance_eval(preds)
+  parser = argparse.ArgumentParser()
+  parser.add_argument("-f", "--files", required=True, nargs="*", type=str, help="List of preds.json files")
+  parser.add_argument("-s", "--single", action="store_true",
+                      help="If true, merges all predictions into single file. The resulting scores will be different from simply averaging")
+  parser.add_argument("-a", "--all_metrics", action="store_true", help="Print intermediate metrics on subsplits.")
+  parser.add_argument("-m", "--mean", action="store_true", help="Report mean and std of all runs")
+
+  all_scores = []
+  args = parser.parse_args()
+  if args.single:
+    all_preds = {}
+    for pred_file in args.files:
+      preds = read_file(pred_file)
+      all_preds.update(preds)
+    evaluate_exp(all_preds, simple=not args.all_metrics)
+  else:
+    for pred_file in args.files:
+      print(pred_file, end=", ")
+      preds = read_file(pred_file)
+      f1 = evaluate_exp(preds, simple=not args.all_metrics)
+      if args.mean:
+        all_scores.append(f1)
+  if args.mean:
+    print(all_scores)
+    print(f"Mean: {100 * np.mean(all_scores) :.4f} with std: {100 * np.std(all_scores):.4f}")

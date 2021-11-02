@@ -5,6 +5,7 @@ All functions have type
 
 Cluster * Span * score --> emb
 
+score has been unused thus far
 """
 
 

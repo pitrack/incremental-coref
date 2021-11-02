@@ -24,10 +24,13 @@ def output_conll(input_file, output_file, predictions, subtoken_map):
       for start, end in mentions:
         start, end = subtoken_map[doc_key][start], subtoken_map[doc_key][end]
         if start == end:
-          word_map[start].append(cluster_id)
+          if cluster_id not in word_map[start]:
+            word_map[start].append(cluster_id)
         else:
-          start_map[start].append((cluster_id, end))
-          end_map[end].append((cluster_id, start))
+          if (((cluster_id, end) not in start_map[start])
+              and ((cluster_id, start) not in end_map[end])):
+            start_map[start].append((cluster_id, end))
+            end_map[end].append((cluster_id, start))
     for k,v in start_map.items():
       start_map[k] = [cluster_id for cluster_id, end in sorted(v, key=operator.itemgetter(1), reverse=True)]
     for k,v in end_map.items():

@@ -154,7 +154,7 @@ class lemma:
     self.lemma = lemma
     self.coarse_sense = coarse_sense
     self.leaf_id = leaf_id
-    
+
     self.id = "%s@%s" % (self.lemma, self.leaf_id)
 
   sql_table_name = "lemma"
@@ -272,7 +272,7 @@ insert into lemma
     data = [(self.id, self.input_string, self.b_transliteration, self.comment, self.index,
              self.offset, self.unvocalized_string, self.vocalized_string, self.vocalized_input,
              self.pos, self.gloss, self.lemma, self.coarse_sense, self.leaf_id)]
-    
+
     cursor.executemany("%s" % (self.__class__.sql_insert_statement), data)
 
 
@@ -927,7 +927,7 @@ def start(input_fname, conll_fname, output_fname, encoding, changes):
     if re.search('data%s+arabic%s+annotations' % (os.sep, os.sep), input_fname):
       is_arabic = True
 
-      
+
 
 
     if is_arabic is True:
@@ -1052,7 +1052,7 @@ def start(input_fname, conll_fname, output_fname, encoding, changes):
            try:
              lemma_lemma, coarse_sense = lemma_lemma.split("_")
            except ValueError:
-             raise 
+             raise
 
          lemma_object = lemma(list_of_input_strings[i],
                               list_of_b_transliterations[i],
@@ -1064,7 +1064,7 @@ def start(input_fname, conll_fname, output_fname, encoding, changes):
                               list_of_vocalized_inputs[i],
                               list_of_pos[i],
                               list_of_glosses[i],
-                              lemma_lemma, 
+                              lemma_lemma,
                               coarse_sense,
                               i)
 
@@ -1105,7 +1105,7 @@ def start(input_fname, conll_fname, output_fname, encoding, changes):
                         print "found the same lemma"
                       else:
                         raise Exception("Something is wrong: %s %s %s" % (columns[LEMMA_COLUMN], a_list_of_lemmas[w].lemma.strip(), " ".join(columns)))
-                      
+
                     columns[LEMMA_COLUMN] = a_list_of_lemmas[w].lemma.strip()
                 else:
                     columns[WORD_COLUMN] = w_list[i][c]

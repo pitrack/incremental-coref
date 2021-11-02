@@ -413,7 +413,7 @@ def expand_document_id(document_id, language):
         abbr_language = "ch"
     elif language == "arabic":
         abbr_language = "ar"
-    
+
     file_bit=document_id[-4:]
     genre_bit, source_bit, ignore = document_id.split("/", 2)
     constant="%s@on" % (abbr_language)
@@ -434,7 +434,7 @@ def main():
     o_parser = optparse.OptionParser()
     o_parser.set_defaults(DEBUG=False)
     o_parser.set_defaults(LANGUAGE=None)
-    
+
     o_parser.add_option("-d", "--debug", action="store_true", dest="DEBUG", help="Set debug mode on")
     o_parser.add_option("-l", "--language", action="store", dest="LANGUAGE", help="Set language")
     o_parser.add_option("-o", "--option", help="perform the specified task.  this can be 'pre-process' or 'decode'")
@@ -457,7 +457,7 @@ def main():
 
     if o_options.LANGUAGE is None:
         error("please specify language using -l option")
-        
+
 
     r_c_matrix = []
     if(required_number_of_args > 0):

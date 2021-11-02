@@ -1,19 +1,22 @@
-import torch
-import util
-import numpy as np
-import os
 import logging
-from encoder import BertModel
+import os
+import numpy as np
+import torch
+
+from encoder import Encoder
+import util
+from util import load_from_pretrained_or_random as load_from
 
 torch.manual_seed(0)
 
 class GenreEmbedder(torch.nn.Module):
-  def __init__(self, config, scorer_vars, device):
+  def __init__(self, config, scorer_vars={}):
     super(GenreEmbedder, self).__init__()
-    self.genre_emb = torch.nn.Parameter(
-      data=scorer_vars["genre_embeddings"])
-    self.genres = { g:i for i,g in enumerate(config["genres"]) }
-    self.device = device
+    genre_emb_size = [len(config["genres"]), config["genre"]["genre_emb_size"]]
+    genre_emb = load_from(scorer_vars, "genre_embeddings", genre_emb_size)
+    self.genre_emb = torch.nn.Parameter(data=genre_emb)
+    self.genres = {g: i for i, g in enumerate(config["genres"])}
+    self.device = config["device"]
 
   def forward(self, genre_string):
     genre = torch.tensor(self.genres.get(genre_string, 0), device=self.device)
@@ -25,11 +28,18 @@ class FFNN(util.FFNN):
   def __init__(self, config, scorer_vars, ffnn_path, layer_0_dims):
     super(FFNN, self).__init__(layer_0_dims[0], layer_0_dims[1], 1,
                                config["dropout"], output_dim=1)
-    hidden_weights_0 = scorer_vars["{}/hidden_weights_0".format(ffnn_path)]
-    hidden_bias_0 = scorer_vars["{}/hidden_bias_0".format(ffnn_path)]
-    output_weights = scorer_vars["{}/output_weights".format(ffnn_path)]
-    output_bias = scorer_vars["{}/output_bias".format(ffnn_path)]
-
+    hidden_weights_0 = load_from(scorer_vars,
+                                 "{}/hidden_weights_0".format(ffnn_path),
+                                 layer_0_dims)
+    hidden_bias_0 = load_from(scorer_vars,
+                              "{}/hidden_bias_0".format(ffnn_path),
+                              [layer_0_dims[1]])
+    output_weights = load_from(scorer_vars,
+                               "{}/output_weights".format(ffnn_path),
+                               [layer_0_dims[1]])
+    output_bias = load_from(scorer_vars,
+                            "{}/output_bias".format(ffnn_path),
+                            [])
     self.layers[0].weight.data = hidden_weights_0.t()
     self.layers[0].bias.data = hidden_bias_0
     self.projection.weight.data = output_weights.t()
@@ -39,12 +49,15 @@ class FFNN(util.FFNN):
 class Projection(torch.nn.Module):
   def __init__(self, scorer_vars, ffnn_path, output_dims):
     super(Projection, self).__init__()
-    self.output_weights = scorer_vars["{}/output_weights".format(ffnn_path)]
-    self.output_bias = scorer_vars["{}/output_bias".format(ffnn_path)]
-
+    output_weights = load_from(scorer_vars,
+                               "{}/output_weights".format(ffnn_path),
+                               [output_dims[0]])
+    output_bias = load_from(scorer_vars,
+                            "{}/output_bias".format(ffnn_path),
+                            [])
     self.output_layer = torch.nn.Linear(output_dims[0], output_dims[1])
-    self.output_layer.weight.data = self.output_weights.t().unsqueeze(0)
-    self.output_layer.bias.data = self.output_bias.unsqueeze(0)
+    self.output_layer.weight.data = output_weights.t().unsqueeze(0)
+    self.output_layer.bias.data = output_bias.unsqueeze(0)
 
   def forward(self, x):
     return self.output_layer(x)
@@ -52,20 +65,31 @@ class Projection(torch.nn.Module):
 
 class SpanScorer(torch.nn.Module):
   """ This is a span scorer, scores a single span embedding"""
-  def __init__(self, config, scorer_vars, device):
+  def __init__(self, config, scorer_vars={}):
     super(SpanScorer, self).__init__()
-    self.config=config
-    mention_layer_dims = (3092, 3000)
-    mention_attn_dims = (1024, 1)
-    self.span_width_embeddings = torch.nn.Parameter(data=scorer_vars["span_width_embeddings"])
+    self.config = config
+    token_emb_size = config["token_emb_size"]
+    feature_size = config["spans"]["feature_size"]
+    mention_layer_input_dim = token_emb_size * 3 + feature_size
+    mention_layer_output_dim = config["spans"]["output_size"]
+    mention_layer_dims = (mention_layer_input_dim, mention_layer_output_dim)
+    mention_attn_dims = (token_emb_size, 1)
+    width_layer_dims = (feature_size, mention_layer_output_dim)
+    span_width_dims = (config["spans"]["span_width_buckets"], feature_size)
+
+    span_width_embeddings = load_from(scorer_vars, "span_width_embeddings", span_width_dims)
+    span_width_prior_embeddings = load_from(scorer_vars,
+                                            "span_width_prior_embeddings",
+                                            span_width_dims)
+
+    self.span_width_embeddings = torch.nn.Parameter(data=span_width_embeddings)
+    self.span_width_prior_embeddings = torch.nn.Parameter(data=span_width_prior_embeddings)
     self.attnProjection = Projection(scorer_vars, "mention_word_attn", mention_attn_dims)
     self.spanFFNN = FFNN(self.config, scorer_vars, "mention_scores", mention_layer_dims)
-    width_layer_dims = (20, 3000)
-    self.span_width_prior_embeddings = torch.nn.Parameter(data=scorer_vars["span_width_prior_embeddings"])
     self.widthFFNN = FFNN(self.config, scorer_vars, "width_scores", width_layer_dims)
     self.max_span_width = config["max_span_width"]
     self.top_span_ratio = config["top_span_ratio"]
-    self.device = device
+    self.device = config["device"]
 
   def forward(self, starts, ends, embs, use_gold_spans=False):
     incr_doc_embs = embs.squeeze(0)
@@ -102,26 +126,42 @@ class SpanScorer(torch.nn.Module):
 
 class ScoringModule(torch.nn.Module):
   """ This is the slow, pairwise scorer"""
-  def __init__(self, config, scorer_vars, device):
+  def __init__(self, config, scorer_vars={}):
     super(ScoringModule, self).__init__()
     self.config = config
-    self.same_speaker_emb = torch.nn.Parameter(data=scorer_vars["coref_layer/same_speaker_emb"])
-    self.antecedent_distance_emb = torch.nn.Parameter(data=scorer_vars["coref_layer/antecedent_distance_emb"])
-    self.segment_distance_emb = torch.nn.Parameter(data=scorer_vars["coref_layer/segment_distance/segment_distance_embeddings"])
-    layer_0_dims = (9356, 3000)
+
+    feature_size = config["spans"]["feature_size"]
+    output_size = config["spans"]["output_size"]
+    token_emb_size = config["token_emb_size"]
+    span_size = token_emb_size * 3 + feature_size
+    same_speaker_emb_dims = (config["pairwise"]["speaker_buckets"], feature_size)
+    antecedent_distance_dims = (config["pairwise"]["antecedent_distance_buckets"], feature_size)
+    segment_distance_dims = (config["pairwise"]["segment_buckets"], feature_size)
+    slow_scorer_dims = (span_size * 3 + feature_size * 4, output_size)
+
+    same_speaker_emb = load_from(scorer_vars, "coref_layer/same_speaker_emb", same_speaker_emb_dims)
+    antecedent_distance_emb = load_from(scorer_vars, "coref_layer/antecedent_distance_emb", antecedent_distance_dims)
+    segment_distance_emb = load_from(scorer_vars, "coref_layer/segment_distance/segment_distance_embeddings", segment_distance_dims)
+
+    self.same_speaker_emb = torch.nn.Parameter(data=same_speaker_emb)
+    self.antecedent_distance_emb = torch.nn.Parameter(data=antecedent_distance_emb)
+    self.segment_distance_emb = torch.nn.Parameter(data=segment_distance_emb)
     self.slow_antecedent_scores = FFNN(self.config, scorer_vars,
-                                       "coref_layer/slow_antecedent_scores", layer_0_dims)
-    self.device = device
+                                       "coref_layer/slow_antecedent_scores", slow_scorer_dims)
+    self.device = config["device"]
 
   def forward(self, span_emb, cluster_embs, offsets, genre_emb):
     """ Everything except offsets is already on device
     since it was computed elsewhere"""
     span_emb = span_emb.unsqueeze(0)
     cluster_ids = torch.arange(len(cluster_embs), device=self.device).unsqueeze(0)
+    # Need to do random permutation here to ensure symmetric function.
+
     cluster_embs = torch.stack(cluster_embs, 0).unsqueeze(0)
     offsets = offsets.unsqueeze(0)
     speakers = torch.zeros_like(cluster_ids).squeeze(0)
     genre_emb = genre_emb.squeeze(0)
+    # We could use segment features...
     segment_distance = torch.zeros_like(cluster_ids)
     same_speaker = speakers.unsqueeze(0)
     return self.get_slow_antecedent_scores(
@@ -138,10 +178,11 @@ class ScoringModule(torch.nn.Module):
     Places the given values (designed for distances) into 10 semi-logscale buckets:
     [0, 1, 2, 3, 4, 5-7, 8-15, 16-31, 32-63, 64+].
     """
-    logspace_idx = torch.floor(torch.log(distances.float())/np.log(2)).int() + 3
+    logspace_idx = torch.floor(torch.log(distances.float().abs())/np.log(2)).int() + 3
     use_identity = (distances <= 4).int()
     combined_idx = use_identity * distances + (1 - use_identity) * logspace_idx
-    return (torch.clamp(combined_idx, 0, 9).long())
+    # return torch.zeros_like(distances).long()
+    return torch.clamp(combined_idx, 0, 9).long()
 
   def get_slow_antecedent_scores(
       self,
@@ -154,16 +195,15 @@ class ScoringModule(torch.nn.Module):
       same_speaker):
     """
     This function has a bunch of issues with batching, it can only do batch size 1
-    due to shape mismatches  and pytorch is difficult to work with on this until
-    we get batched_index_select
+    due to shape mismatches and pytorch is difficult to work with on this unless
+    we include batched_index_select
     """
     k = top_span_emb.size(0) # but it is 1
     c = top_antecedents.size(1)
 
     feature_emb_list = [] # use all features by default
 
-    # TODO: this section is hardcoded to batch size 1. need to use allennlp batched_index_select?
-
+    # This section is hardcoded to batch size 1, batching is not practical...
     # Should not actually have speakers, since that mathematically breaks entity reps
     speaker_pair_emb = torch.index_select(self.same_speaker_emb, 0, same_speaker[0])
     speaker_pair_emb = torch.zeros_like(speaker_pair_emb)
@@ -193,24 +233,30 @@ def create_from_scratch(config=None):
   if config is None:
     config = util.initialize_from_env()
   device = torch.device('cuda') if torch.cuda.is_available() else "cpu"
+  config["device"] = device
+
   # Initialization
-  init_path = os.path.join(config["bert_ckpt_dir"], "torch_scorer_vars.bin")
-  torch_scorer_vars = torch.load(init_path)
+  encoder = Encoder(config).to(device=device)
+
+  # If ckpt_dir does not exist or if we want to reset weights
+  if config["reset_weights"] or "ckpt_dir" not in config:
+    logging.info(f"Resetting all weights with normal or xavier_uniform (seed {torch.initial_seed()}) because reset_weights=True or ckpt_dir not found")
+    torch_scorer_vars = {}
+  else:
+    init_path = os.path.join(config["ckpt_dir"], "torch_scorer_vars.bin")
+    try:
+      torch_scorer_vars = torch.load(init_path)
+      logging.info(f"Loaded model from {init_path}")
+    except FileNotFoundError:
+      torch_scorer_vars = {}
+      logging.info(f"Failed to load model from {init_path}. Resetting instead")
+  genre_embedder = GenreEmbedder(config, scorer_vars=torch_scorer_vars).to(device=device)
+  span_scorer = SpanScorer(config, scorer_vars=torch_scorer_vars).to(device=device)
+  scoring_module = ScoringModule(config, scorer_vars=torch_scorer_vars).to(device=device)
   logging.info("Putting Encoder, GenreEmbedder, SpanScorer, and ScoringModule all on {}".format(device))
 
-  if config["reset_weights"]:
-    logging.info(f"Resetting all weights with normal or xavier_uniform (seed {torch.initial_seed()})")
-    for key, var in torch_scorer_vars.items():
-      if len(var.shape) >= 2:
-        torch.nn.init.xavier_uniform_(var)
-      else:
-        torch.nn.init.normal_(var)
-
-  if config["encoder_type"] == "bert":
-    encoder = BertModel(config, device).to(device=device)
-  genre_embedder = GenreEmbedder(config, torch_scorer_vars, device).to(device=device)
-  span_scorer = SpanScorer(config, torch_scorer_vars, device).to(device=device)
-  scoring_module = ScoringModule(config, torch_scorer_vars, device).to(device=device)
   return encoder, genre_embedder, span_scorer, scoring_module, device
+
+
 if __name__ == "__main__":
   create_from_scratch()

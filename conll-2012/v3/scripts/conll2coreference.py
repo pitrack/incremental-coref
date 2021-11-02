@@ -440,10 +440,10 @@ class coreference_tagged_sentence:
         #rows = []
         #for tuple in r_c_matrix:
         #    rows.append(" ".join(tuple))
-        #            
+        #
         #on.common.util.pretty_print_table(rows)
         #print
-            
+
 
         for r_i, r in enumerate(r_c_matrix):
 
@@ -492,7 +492,7 @@ class coreference_tagged_sentence:
                         self.chain_hash[ids[i]].append(a_link)
                     except:
                         sys.stderr.write("WARNING: dropping link with id [%s]" % (ids[i]))
-        
+
 
 
 
@@ -521,7 +521,7 @@ class coreference_tagged_sentence:
         # make words sgml safe
         for i in range(0, len(coref_tagged_words)):
             coref_tagged_words[i] = make_sgml_safe(coref_tagged_words[i])
-            
+
 
         for a_link in self.links:
             coref_tagged_words[a_link.start] = """<COREF ID="%s" TYPE="IDENT">%s""" % (a_link.id, coref_tagged_words[a_link.start])
@@ -542,8 +542,8 @@ def expand_document_id(document_id, language):
         abbr_language = "ch"
     elif language == "arabic":
         abbr_language = "ar"
-    
-    
+
+
     file_bit=document_id[-4:]
     genre_bit, source_bit, ignore = document_id.split("/", 2)
     constant="%s@on" % (abbr_language)
@@ -589,7 +589,7 @@ def main():
 
     if o_options.LANGUAGE is None:
         error("please specify language using -l option")
-        
+
 
     r_c_matrix = []
     sentence_index = 0

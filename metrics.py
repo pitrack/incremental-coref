@@ -13,7 +13,7 @@ def f1(p_num, p_den, r_num, r_den, beta=1):
 
 class CorefEvaluator(object):
     def __init__(self):
-        self.evaluators = [Evaluator(m) for m in (muc, b_cubed, ceafe)]
+        self.evaluators = [Evaluator(m) for m in (muc, b_cubed, ceafe, em, mentions)]
         self.count = 0
 
     def update(self, predicted, gold, mention_to_predicted, mention_to_gold):
@@ -22,13 +22,13 @@ class CorefEvaluator(object):
             e.update(predicted, gold, mention_to_predicted, mention_to_gold)
 
     def get_f1(self):
-        return sum(e.get_f1() for e in self.evaluators) / len(self.evaluators)
+        return sum(e.get_f1() for e in self.evaluators[:3]) / len(self.evaluators[:3])
 
     def get_recall(self):
-        return sum(e.get_recall() for e in self.evaluators) / len(self.evaluators)
+        return sum(e.get_recall() for e in self.evaluators[:3]) / len(self.evaluators[:3])
 
     def get_precision(self):
-        return sum(e.get_precision() for e in self.evaluators) / len(self.evaluators)
+        return sum(e.get_precision() for e in self.evaluators[:3]) / len(self.evaluators[:3])
 
     def get_prf(self):
         return self.get_precision(), self.get_recall(), self.get_f1()
@@ -38,13 +38,14 @@ class CorefEvaluator(object):
         return f"{p:.3f}, {r:.3f}, {f:.3f}"
 
     def get_full(self):
-        eval_names = ("muc", "b_cubed", "ceafe")
+        eval_names = ("muc", "b_cubed", "ceafe", "em", "mentions")
+        details = []
         for e, name in zip(self.evaluators, eval_names):
             p = e.get_precision()
             r = e.get_recall()
             f1 = e.get_f1()
-            print(f"{name}: {p} {r} {f1}")
-
+            details.append(f"{name}: {p:.4f} {r:.4f} {f1:.4f}")
+        return details
 
     def get_count(self):
         return self.count
@@ -59,8 +60,10 @@ class Evaluator(object):
         self.beta = beta
 
     def update(self, predicted, gold, mention_to_predicted, mention_to_gold):
-        if self.metric == ceafe:
+        if self.metric == ceafe or self.metric == em:
             pn, pd, rn, rd = self.metric(predicted, gold)
+        elif self.metric == mentions:
+            pn, pd, rn, rd = self.metric(mention_to_predicted, mention_to_gold)
         else:
             pn, pd = self.metric(predicted, mention_to_gold)
             rn, rd = self.metric(gold, mention_to_predicted)
@@ -98,22 +101,26 @@ def evaluate_documents(documents, metric, beta=1):
         evaluator.update(document)
     return evaluator.get_precision(), evaluator.get_recall(), evaluator.get_f1()
 
+def mentions(mention_to_predicted, mention_to_gold):
+    predicted_mention_set = mention_to_predicted.keys()
+    gold_mention_set = mention_to_gold.keys()
+    p_num = len(predicted_mention_set & gold_mention_set)
+    p_denom = len(predicted_mention_set)
+    r_num = len(gold_mention_set & predicted_mention_set)
+    r_denom = len(gold_mention_set)
+    return p_num, p_denom, r_num, r_denom
 
 def b_cubed(clusters, mention_to_gold):
     num, dem = 0, 0
 
     for c in clusters:
-        if len(c) == 1:
-            continue
-
         gold_counts = Counter()
         correct = 0
         for m in c:
             if m in mention_to_gold:
                 gold_counts[tuple(mention_to_gold[m])] += 1
         for c2, count in gold_counts.items():
-            if len(c2) != 1:
-                correct += count * count
+            correct += count * count
 
         num += correct / float(len(c))
         dem += len(c)
@@ -141,7 +148,6 @@ def phi4(c1, c2):
 
 
 def ceafe(clusters, gold_clusters):
-    clusters = [c for c in clusters if len(c) != 1]
     scores = np.zeros((len(gold_clusters), len(clusters)))
     for i in range(len(gold_clusters)):
         for j in range(len(clusters)):
@@ -170,3 +176,17 @@ def lea(clusters, mention_to_gold):
         dem += len(c)
 
     return num, dem
+
+
+def em(clusters, gold_clusters):
+  pn, pd = 0, 0
+  for cluster in clusters:
+    if cluster in gold_clusters:
+      pn += 1
+    pd += 1
+  rn, rd = 0, 0
+  for cluster in gold_clusters:
+    if cluster in clusters:
+      rn += 1
+    rd += 1
+  return pn, pd, rn, rd

@@ -11,16 +11,28 @@ import logging
 import json
 import _jsonnet
 import torch
-from pytorch_memlab import MemReporter
+import random
 from cluster import Span
 
-
-def initialize_from_env(eval_test=False):
+def initialize_from_env(eval_test=False, use_overrides=True):
   if "GPU" in os.environ:
     set_gpus(int(os.environ["GPU"]))
 
   name = sys.argv[1]
+  overrides = {}
+  if len(sys.argv) > 2 and use_overrides:
+    for item in sys.argv[2:]:
+      key, value = item.split("=", 1)
+      try:
+        overrides[key] = json.loads(value)
+      except:
+        overrides[key] = value
+
   config = json.loads(_jsonnet.evaluate_file("experiments.jsonnet"))[name]
+
+  # Put everything in override
+  config.update(overrides)
+
   mkdirs(config["log_dir"])
   logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +46,10 @@ def initialize_from_env(eval_test=False):
   logging.getLogger("transformers").setLevel(logging.WARNING)
   logging.info("Running experiment: {}".format(name))
   logging.info(json.dumps(config, indent=2))
+  device = torch.device('cuda') if torch.cuda.is_available() else "cpu"
+  config["device"] = device
+  if "load_path" not in config:
+    config["load_path"] = config["log_path"]
   return config
 
 
@@ -46,19 +62,45 @@ def mkdirs(path):
   return path
 
 
-def load_data(path):
+def load_params(module, log_path, key):
+  try:
+    checkpoint = torch.load(log_path, map_location="cpu")
+    logging.info(f"Found checkpoint at {log_path}, loading instead.")
+  except:
+    logging.info(f"Checkpoint not found at {log_path}")
+    return
+  try:
+    missing, unexpected = module.load_state_dict(checkpoint[key], strict=False)
+    if missing or unexpected:
+      print(f"Did not find (using defaults):{str(missing)[:100]}...\n\n" +
+            f"Unexpected params (ignoring): {unexpected}")
+  except Exception as e1:
+    try:
+      module.load_state_dict(checkpoint[key])
+      logging.info(f"Module cannot load with keyword strict=False. Loading with its default.")
+    except Exception as e2:
+      logging.info(f"Unable to load checkpoint for {key}: {e1}, {e2}")
+      return
+
+
+def load_data(path, num_examples=None):
+  if path is None or not path:
+    return []
   def load_line(line):
     example = json.loads(line)
     # Need to make antecedent dict
     clusters = [sorted(cluster) for cluster in example["clusters"]]
     antecedent_map = {}
     for cluster in clusters:
+      antecedent_map[tuple(cluster[0])] = "0"
       for span_idx in range(1, len(cluster)):
-        antecedent_map[tuple(cluster[span_idx])] = tuple(cluster[span_idx - 1])
+        antecedent_map[tuple(cluster[span_idx])] = [tuple(span) for span in cluster[:span_idx]]
     example["antecedent_map"] = antecedent_map
     return example
   with open(path) as f:
     data = [load_line(l) for l in f.readlines()]
+    if num_examples is not None:
+      data = data[:num_examples]
     logging.info("Loaded {} examples.".format(len(data)))
     return data
 
@@ -66,15 +108,29 @@ def load_data(path):
 def flatten(l):
   return [item for sublist in l for item in sublist]
 
-def track(name=None):
-  reporter = MemReporter(name)
-  reporter.report()
+def safe_add(tensor1, tensor2):
+  # None is the additive identity and the result can be backpropped
+  if tensor1 is None:
+    return tensor2
+  if tensor2 is None:
+    return tensor1
+  else:
+    return tensor1 + tensor2
 
-def num_obj():
-  reporter = MemReporter()
-  reporter.collect_tensor()
-  reporter.get_stats()
-  return reporter.device_tensor_stat[torch.device("cuda:0")]
+
+# For memory debugging:
+
+# from pytorch_memlab import MemReporter
+
+# def track(name=None):
+#   reporter = MemReporter(name)
+#   reporter.report()
+
+# def num_obj():
+#   reporter = MemReporter()
+#   reporter.collect_tensor()
+#   reporter.get_stats()
+#   return reporter.device_tensor_stat[torch.device("cuda:0")]
 
 
 def get_cuda_memory_allocated():
@@ -97,7 +153,7 @@ def get_segment_iter(document):
   return enumerate(segments)
 
 
-def get_sentence_iter(sentences, segment_map, data_loader, seg_offset, genre):
+def get_sentence_iter(sentences, segment_map, data_loader, seg_offset, genre, cluster_fn):
   lower = 0
   min_sent = segment_map[0]
   max_sent = segment_map[-1]
@@ -105,12 +161,12 @@ def get_sentence_iter(sentences, segment_map, data_loader, seg_offset, genre):
   for curr_sent in range(min_sent, max_sent):
     upper = lower + sum([idx == curr_sent for idx in segment_map])
     sentence = sentences[lower:upper]
-    spans = [Span(emb,
-                  start.item() + seg_offset,
-                  end.item() + seg_offset,
-                  lower + seg_offset,
-                  sentence,
-                  score)
+    spans = [cluster_fn(Span(emb,
+                          start.item() + seg_offset,
+                          end.item() + seg_offset,
+                          lower + seg_offset,
+                          sentence,
+                          score))
              for emb, start, end, score in data_loader
              if ((lower <= start and start < upper) and
                  (lower <= end and end < upper))]
@@ -177,3 +233,25 @@ class FFNN(torch.nn.Module):
     if self.projection is not None:
       output = self.projection(output)
     return output
+
+def random_tensor(sizes):
+  if len(sizes) >= 2:
+    return torch.nn.init.xavier_uniform_(
+      torch.empty(sizes))
+  else:
+    return torch.nn.init.normal_(torch.empty(sizes))
+
+def gen_subepoch_iter(data, size):
+  num_pieces = int((len(data) - 1)/size) + 1
+  return [data[i*size:(i+1)*size] for i in range(num_pieces)]
+
+def load_from_pretrained_or_random(scorer_vars, name, sizes):
+  return scorer_vars.get(name, random_tensor(sizes))
+
+def set_seed(config):
+  # There is still nondeterminism somewhere
+  logging.info(f"Setting seed to {config['seed']}")
+  random.seed(config['seed'])
+  np.random.seed(config['seed'])
+  torch.manual_seed(config['seed'])
+  torch.cuda.manual_seed_all(config['seed'])

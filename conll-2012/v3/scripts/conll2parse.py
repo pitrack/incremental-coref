@@ -505,7 +505,7 @@ def main():
 
     if o_options.LANGUAGE is None:
         error("please specify language using -l option")
-        
+
 
     r_c_matrix = []
     if(required_number_of_args > 0):
@@ -526,7 +526,7 @@ def main():
             else:
                 columns = file_line.split()
                 (word, part_of_speech, encoded_parse) = columns[3], columns[4], columns[5]
-                
+
                 if o_options.LANGUAGE == "arabic":
                     r_c_matrix.append([re.sub("#.*", "", word), part_of_speech, encoded_parse])
                 else:
