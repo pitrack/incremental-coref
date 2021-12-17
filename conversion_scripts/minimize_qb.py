@@ -113,33 +113,9 @@ class DocumentState(object):
     }
 
 
-def clean_text(text):
-  original = text
-  # From https://github.com/juntaoy/aracoref/blob/main/preprocess_arabic.py
-  # remove tashkeel
-  text = text.replace('{', 'ا')
-  text = text.replace('}', 'ا')
-
-  #text = text.replace('-','')
-  p_tashkeel = re.compile(r'[\u0617-\u061A\u064B-\u0652]')
-  text = re.sub(p_tashkeel, "", text)
-
-  #Other typos in the conll files
-  text = text.replace('ه`ذا', 'هذا')
-  text = text.replace('ه`ذه', 'هذه')
-  text = text.replace('ه`ذين', 'هذين')
-  text = text.replace('الل`ه','الله')
-  text = text.replace('ذ`لك', 'ذلك')
-  text = text.replace('إل`ه','إله')
-
-  # Additional for subtoken map reasons, rarely return original
-  if len(text) == 0:
-    return original
-  return text
-
 def normalize_word(word, language):
   if language == "arabic":
-    word = clean_text(word[:word.find("#")])
+    word = word[:word.find("#")]
   if word == "/." or word == "/?":
     return word[1:]
   else:
@@ -189,7 +165,8 @@ def get_sentence_map(segments, sentence_end):
     sent_map.append(current)
   return sent_map
 
-def get_document(document_lines, tokenizer, language, segment_len):
+def get_document(document_lines, tokenizer, segment_len):
+  language = "english"
   document_state = DocumentState(document_lines[0])
   document_state.language = language
   word_idx = -1
@@ -224,9 +201,9 @@ def skip(doc_key):
     # return True
   return False
 
-def minimize_partition(name, language, extension, labels, stats, tokenizer, seg_len, input_dir, output_dir):
-  input_path = "{}/{}.{}.{}".format(input_dir, name, language, extension)
-  output_path = "{}/{}.{}.{}.jsonlines".format(output_dir, name, language, seg_len)
+def minimize_partition(name, extension, labels, stats, tokenizer, seg_len, input_dir, output_dir):
+  input_path = "{}/{}.{}".format(input_dir, name, extension)
+  output_path = "{}/{}.{}.jsonlines".format(output_dir, name, seg_len)
   count = 0
   print("Minimizing {}".format(input_path))
   documents = []
@@ -244,40 +221,29 @@ def minimize_partition(name, language, extension, labels, stats, tokenizer, seg_
     for document_lines in documents:
       if skip(document_lines[0]):
         continue
-      document = get_document(document_lines, tokenizer, language, seg_len)
+      document = get_document(document_lines, tokenizer, seg_len)
       output_file.write(json.dumps(document))
       output_file.write("\n")
       count += 1
   print("Wrote {} documents to {}".format(count, output_path))
 
-def minimize_language(language, labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model):
-  # do_lower_case = True if 'chinese' in vocab_file else False
+def minimize_language(labels, stats, seg_len, input_dir, output_dir, model):
   if model == "bert":
     tokenizer = BertTokenizer.from_pretrained('bert-large-cased')
-    # tokenizer = tokenization.FullTokenizer(
-    #               vocab_file=vocab_file, do_lower_case=do_lower_case)
   elif model == "xlmr":
     tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-large')
-  minimize_partition("dev", language, "v4_gold_conll", labels, stats, tokenizer, seg_len, input_dir, output_dir)
-  minimize_partition("train", language, "v4_gold_conll", labels, stats, tokenizer, seg_len, input_dir, output_dir)
-  minimize_partition("test", language, "v4_gold_conll", labels, stats, tokenizer, seg_len, input_dir, output_dir)
+  minimize_partition("all_docs", "v2_auto_conll", labels, stats, tokenizer, seg_len, input_dir, output_dir)
 
 if __name__ == "__main__":
-  vocab_file = sys.argv[1]
-  input_dir = sys.argv[2]
-  output_dir = sys.argv[3]
-  do_lower_case = sys.argv[4].lower() == 'true'
-  model = sys.argv[5]
-  print(do_lower_case)
+  input_dir = sys.argv[1]
+  output_dir = sys.argv[2]
+  model = sys.argv[3]
   labels = collections.defaultdict(set)
   stats = collections.defaultdict(int)
   if not os.path.isdir(output_dir):
     os.mkdir(output_dir)
   for seg_len in [512]:
-    # minimize_language("english", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model)
-    # minimize_language("chinese", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model)
-    # minimize_language("es", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model)
-    minimize_language("arabic", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model)
+    minimize_language(labels, stats, seg_len, input_dir, output_dir, model)
   for k, v in labels.items():
     print("{} = [{}]".format(k, ", ".join("\"{}\"".format(label) for label in v)))
   for k, v in stats.items():

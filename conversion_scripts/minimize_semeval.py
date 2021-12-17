@@ -13,8 +13,11 @@ import collections
 
 import util
 import conll
+# from bert import tokenization
 from transformers import *
 
+BEGIN_DOCUMENT_SEMEVAL_REGEX = re.compile("#begin document (.*)")
+COREF_REGEX = re.compile("[-|_]?(.*)")
 class DocumentState(object):
   def __init__(self, key):
     self.doc_key = key
@@ -60,20 +63,34 @@ class DocumentState(object):
       for i, tok_info in enumerate(segment):
         first_subtoken_index += 1
         coref = tok_info[-2] if tok_info is not None else '-'
-        if coref != "-":
+        coref_match = re.match(COREF_REGEX, coref)
+        if coref_match is None:
+          print(f"Skipping: {coref} {tok_info}")
+          continue
+        coref = coref_match.group(1)
+        if coref:
+          coref = clean_coref(coref)
           last_subtoken_index = first_subtoken_index + tok_info[-1] - 1
-          for part in coref.split("|"):
-            if part[0] == "(":
-              if part[-1] == ")":
-                cluster_id = int(part[1:-1])
-                self.clusters[cluster_id].append((first_subtoken_index, last_subtoken_index))
+          try:
+            for part in coref.split("|"):
+              if part[0] == "(":
+                if part[-1] == ")":
+                  cluster_id = int(part[1:-1])
+                  self.clusters[cluster_id].append((first_subtoken_index, last_subtoken_index))
+                else:
+                  cluster_id = int(part[1:])
+                  self.coref_stacks[cluster_id].append(first_subtoken_index)
+              elif part[-1] == ")":
+                cluster_id = int(part[:-1])
+                start = self.coref_stacks[cluster_id].pop()
+                self.clusters[cluster_id].append((start, last_subtoken_index))
               else:
-                cluster_id = int(part[1:])
-                self.coref_stacks[cluster_id].append(first_subtoken_index)
-            else:
-              cluster_id = int(part[:-1])
-              start = self.coref_stacks[cluster_id].pop()
-              self.clusters[cluster_id].append((start, last_subtoken_index))
+                cluster_id = int(part)
+                self.clusters[cluster_id].append((first_subtoken_index, last_subtoken_index))
+          except:
+            if "arg" not in coref:
+              print(f"Skipping: {coref} {tok_info}")  # Since we are removing traces, sometimes there are dangling unopened/unclosed clusters. We will omit those. Only affects train
+            continue
     # merge clusters
     merged_clusters = []
     for c1 in self.clusters.values():
@@ -113,33 +130,14 @@ class DocumentState(object):
     }
 
 
-def clean_text(text):
-  original = text
-  # From https://github.com/juntaoy/aracoref/blob/main/preprocess_arabic.py
-  # remove tashkeel
-  text = text.replace('{', 'ا')
-  text = text.replace('}', 'ا')
-
-  #text = text.replace('-','')
-  p_tashkeel = re.compile(r'[\u0617-\u061A\u064B-\u0652]')
-  text = re.sub(p_tashkeel, "", text)
-
-  #Other typos in the conll files
-  text = text.replace('ه`ذا', 'هذا')
-  text = text.replace('ه`ذه', 'هذه')
-  text = text.replace('ه`ذين', 'هذين')
-  text = text.replace('الل`ه','الله')
-  text = text.replace('ذ`لك', 'ذلك')
-  text = text.replace('إل`ه','إله')
-
-  # Additional for subtoken map reasons, rarely return original
-  if len(text) == 0:
-    return original
-  return text
-
+def clean_coref(coref):
+  coref = coref.replace(")(", ")|(")
+  return coref
+  
 def normalize_word(word, language):
   if language == "arabic":
     word = clean_text(word[:word.find("#")])
+  word = word.replace("_", " ")
   if word == "/." or word == "/?":
     return word[1:]
   else:
@@ -201,16 +199,18 @@ def get_document(document_lines, tokenizer, language, segment_len):
       word_idx += 1
       word = normalize_word(row[3], language)
       subtokens = tokenizer.tokenize(word)
-      document_state.tokens.append(word)
-      document_state.token_end += ([False] * (len(subtokens) - 1)) + [True]
-      for sidx, subtoken in enumerate(subtokens):
-        document_state.subtokens.append(subtoken)
-        info = None if sidx != 0 else (row + [len(subtokens)])
-        document_state.info.append(info)
-        document_state.sentence_end.append(False)
-        document_state.subtoken_map.append(word_idx)
+      if len(subtokens) > 0:
+        document_state.tokens.append(word)
+        document_state.token_end += ([False] * (len(subtokens) - 1)) + [True]
+        for sidx, subtoken in enumerate(subtokens):
+          document_state.subtokens.append(subtoken)
+          info = None if sidx != 0 else (row + [len(subtokens)])
+          document_state.info.append(info)
+          document_state.sentence_end.append(False)
+          document_state.subtoken_map.append(word_idx)
     else:
-      document_state.sentence_end[-1] = True
+      if len(document_state.sentence_end) > 0:
+        document_state.sentence_end[-1] = True
   # split_into_segments(document_state, segment_len, document_state.token_end)
   # split_into_segments(document_state, segment_len, document_state.sentence_end)
   constraints1 = document_state.sentence_end if language != 'arabic' else document_state.token_end
@@ -225,16 +225,16 @@ def skip(doc_key):
   return False
 
 def minimize_partition(name, language, extension, labels, stats, tokenizer, seg_len, input_dir, output_dir):
-  input_path = "{}/{}.{}.{}".format(input_dir, name, language, extension)
+  input_path = "{}/{}.{}.{}".format(input_dir, language, name, extension)
   output_path = "{}/{}.{}.{}.jsonlines".format(output_dir, name, language, seg_len)
   count = 0
   print("Minimizing {}".format(input_path))
   documents = []
-  with open(input_path, "r") as input_file:
-    for line in input_file.readlines():
-      begin_document_match = re.match(conll.BEGIN_DOCUMENT_REGEX, line)
+  with open(input_path, "r", encoding="latin1") as input_file: # latin1 is only needed for italian?
+    for i, line in enumerate(input_file.readlines()):
+      begin_document_match = re.match(BEGIN_DOCUMENT_SEMEVAL_REGEX, line)
       if begin_document_match:
-        doc_key = conll.get_doc_key(begin_document_match.group(1), begin_document_match.group(2))
+        doc_key = begin_document_match.group(1)
         documents.append((doc_key, []))
       elif line.startswith("#end document"):
         continue
@@ -250,7 +250,7 @@ def minimize_partition(name, language, extension, labels, stats, tokenizer, seg_
       count += 1
   print("Wrote {} documents to {}".format(count, output_path))
 
-def minimize_language(language, labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model):
+def minimize_language(language, labels, stats, seg_len, input_dir, output_dir, model):
   # do_lower_case = True if 'chinese' in vocab_file else False
   if model == "bert":
     tokenizer = BertTokenizer.from_pretrained('bert-large-cased')
@@ -258,26 +258,23 @@ def minimize_language(language, labels, stats, vocab_file, seg_len, input_dir, o
     #               vocab_file=vocab_file, do_lower_case=do_lower_case)
   elif model == "xlmr":
     tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-large')
-  minimize_partition("dev", language, "v4_gold_conll", labels, stats, tokenizer, seg_len, input_dir, output_dir)
-  minimize_partition("train", language, "v4_gold_conll", labels, stats, tokenizer, seg_len, input_dir, output_dir)
-  minimize_partition("test", language, "v4_gold_conll", labels, stats, tokenizer, seg_len, input_dir, output_dir)
+  minimize_partition("devel", language, "txt", labels, stats, tokenizer, seg_len, input_dir, output_dir)
+  minimize_partition("train", language, "txt", labels, stats, tokenizer, seg_len, input_dir, output_dir)
+  minimize_partition("test", language, "txt", labels, stats, tokenizer, seg_len, input_dir, output_dir)
 
 if __name__ == "__main__":
-  vocab_file = sys.argv[1]
-  input_dir = sys.argv[2]
-  output_dir = sys.argv[3]
-  do_lower_case = sys.argv[4].lower() == 'true'
-  model = sys.argv[5]
-  print(do_lower_case)
+  input_dir = sys.argv[1]
+  output_dir = sys.argv[2]
+  model = sys.argv[3]
   labels = collections.defaultdict(set)
   stats = collections.defaultdict(int)
   if not os.path.isdir(output_dir):
     os.mkdir(output_dir)
   for seg_len in [512]:
-    # minimize_language("english", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model)
-    # minimize_language("chinese", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model)
-    # minimize_language("es", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model)
-    minimize_language("arabic", labels, stats, vocab_file, seg_len, input_dir, output_dir, do_lower_case, model)
+    # minimize_language("nl", labels, stats, seg_len, input_dir, output_dir, model)
+    # minimize_language("ca", labels, stats, seg_len, input_dir, output_dir, model)
+    minimize_language("it", labels, stats, seg_len, input_dir, output_dir, model)
+    #minimize_language("es", labels, stats, seg_len, input_dir, output_dir, model)
   for k, v in labels.items():
     print("{} = [{}]".format(k, ", ".join("\"{}\"".format(label) for label in v)))
   for k, v in stats.items():
