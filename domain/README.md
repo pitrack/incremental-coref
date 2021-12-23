@@ -14,6 +14,21 @@ all of these files have some lines commented out.
 If you are interested in using the code/files in this directory specifically, I would be 
 happy to help improve them. Contact me via github issues, email, or video call.
 
+
+## Data [WIP section]
+
+There are several conversion scripts used to format all data into jsonlines. 
+
+OntoNotes is can be preprocessed using `minimize.py`, see the main README.md or [prior work](https://github.com/mandarjoshi90/coref) for instructions. The script may need to modified a bit to process all the languages or for specific splits/segment sizes.
+
+SemEval uses a very similar script of `minimize_semeval.py`, since the document input format is the same. This should be run the same way, with one command-line argument being the directory containing the files `<lang_id>.{train, devel}.txt` and another being the output dir. Use the XLM-R model.
+
+Similarly, qb and litbank can be processed using `minimize_qb.py` and `minimize_litbank.py`. The SARA data is already in the correct format, while `convert_arrau.py` is used to convert ARRAU-RST corpus. Note that the ARRAU conversion makes some assumptions (e.g. deferring to minumum span/span heads token when split).
+
+For QBCoref and SARA, the splits were made using `make_splits.py`. This script is not really runnable in its current state. It documents the process for creating the splits.
+
+Some other scripts can be ignroed: `rucor_to_json.py`, `ancor_to_json.py`, `minimize_russian_json.py` (all Russian preprocessing) and `remove_es_trace.py` which I think we didn't end up using.
+
 ## General structure
 
 Each compute node had 8 GPUs, so these were used to enqueue the jobs.

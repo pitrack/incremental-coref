@@ -127,7 +127,7 @@ def get_document(document_lines, tokenizer, language, segment_len, stats=None):
       document_state.tokens.append(word)
       document_state.token_end += ([False] * (len(subtokens) - 1)) + [True]
       if len(subtokens) == 0 or len(subtokens) > 100:
-        print (f"Skipping sentence in {document_lines[0]}: {subtokens[:35]}...")
+        print (f"Skipping token in sentence in {document_lines[0]}: {word, subtokens[:35]}...")
         # print (word_idx, line, document_lines)
         word = "-"
         subtokens = tokenizer.tokenize(word)
@@ -148,10 +148,34 @@ def get_document(document_lines, tokenizer, language, segment_len, stats=None):
   document = document_state.finalize()
   return document
 
-def skip(doc_key):
-  # if doc_key in ['nw/xinhua/00/chtb_0078_0', 'wb/eng/00/eng_0004_1']: #, 'nw/xinhua/01/chtb_0194_0', 'nw/xinhua/01/chtb_0157_0']:
-    # return True
-  return False
+
+def clean_spaces(sentences, clusters, tokenizer):
+  """ Used for processing SARA. It's a bit specific"""
+  offsets = {}
+  curr_offset = 0
+  new_sentences = []
+  curr_token = 0
+  # print(sentences, clusters)
+  for sentence in sentences:
+    new_sentence = []
+    for word in sentence:
+      subtokens = tokenizer.tokenize(word)
+      if len(subtokens) == 0 or len(subtokens) > 100:
+        # print(f"bad: {word}")
+        curr_offset -= 1
+        offsets[curr_token] = None
+      else:
+        new_sentence.append(word)
+        offsets[curr_token] = curr_offset
+      curr_token += 1
+    new_sentences.append(new_sentence)
+  # print(offsets)
+  if clusters:
+    clusters = [[[p[0] + offsets[p[0]], p[1] - 1 + offsets[p[1] - 1]]
+                     for p in cluster]
+                    for cluster in clusters]
+  # print(new_sentences, clusters)
+  return new_sentences, clusters
 
 def minimize_partition(name, language, extension, labels, stats, tokenizer, seg_len, input_dir, output_dir, lines=True):
   input_path = "{}/{}.{}{}".format(input_dir, name, language, extension)
@@ -165,19 +189,19 @@ def minimize_partition(name, language, extension, labels, stats, tokenizer, seg_
       file_lines = [input_file.read()]
     for i, line in enumerate(file_lines):
       doc = json.loads(line)
-      doc_key = doc["doc_key"] if "doc_key" in doc else str(i)
+      doc_key = doc["doc_key"] if "doc_key" in doc else doc["id"] if "id" in doc else str(i)
       text = []
       clusters = doc["clusters"] if "clusters" in doc else {}
       sentences = doc["sentences"] if "sentences" in doc else doc["full_text"]
+      sentences, clusters = clean_spaces(sentences, clusters, tokenizer)
       for sentence in sentences:
         text.extend([[word] for word in sentence])
         text.append([])
-      documents.append((doc_key, text, clusters))
+      documents.append((doc_key, text, clusters, doc["split"]))
   with open(output_path, "w") as output_file:
     for document_lines in documents:
-      if skip(document_lines[0]):
-        continue
       document = get_document(document_lines, tokenizer, language, seg_len, stats=stats)
+      document["split"] = document_lines[-1]
       output_file.write(json.dumps(document))
       output_file.write("\n")
       count += 1
